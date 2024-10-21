@@ -1,69 +1,149 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 )
 
-const echo = "echo "
+func getTimestamp() string {
+	return time.Now().Format("2006-01-02 15:04:05.000")
+}
 
 func main() {
-	// define the port to bind to
-	port := ":4173"
-
-	// create a UDP address
-	udpAddr, err := net.ResolveUDPAddr("udp", port)
-
-	if err != nil {
-		fmt.Printf("%s Failed to resolve UDP address: %v", getTimestamp(), err)
-		os.Exit(1)
+	// check the required command line parameters
+	if len(os.Args) < 3 {
+		fmt.Printf("%s Usage: main <protocol> <mode> <port>\n", getTimestamp())
+		fmt.Printf("%s protocol: udp | tcp\n", getTimestamp())
+		fmt.Printf("%s mode: server\n", getTimestamp())
+		fmt.Printf("%s port: numeric value\n", getTimestamp())
+		return
 	}
 
-	// create a UDP connection
-	conn, err := net.ListenUDP("udp", udpAddr)
+	protocol := os.Args[1]
 
-	if err != nil {
-		fmt.Printf("%s Failed to listen on UDP port: %v", getTimestamp(), err)
-		os.Exit(1)
+	if protocol != "udp" && protocol != "tcp" {
+		fmt.Printf("%s protocol %s is not supported\n", getTimestamp(), protocol)
+		return
 	}
 
-	defer conn.Close()
+	mode := os.Args[2]
 
-	fmt.Printf("%s Listening on UDP port %s\n", getTimestamp(), port)
+	if mode != "server" {
+		fmt.Printf("%s mode %s is not supported\n", getTimestamp(), mode)
+		return
+	}
 
-	// create a data buffer
-	// TODO what happens if the packet exceeds the buffer size?
-	buffer := make([]byte, 1024)
+	port, err := strconv.Atoi(os.Args[3])
 
-	// handle data
-	for {
-		// read UDP packet
-		n, addr, err := conn.ReadFromUDP(buffer)
+	if err != nil {
+		fmt.Printf("%s port %s is not a number\n", getTimestamp(), os.Args[3])
+		return
+	}
+
+	if protocol == "udp" {
+		// create a UDP address
+		udpAddr, err := net.ResolveUDPAddr("udp", ":"+os.Args[3])
 
 		if err != nil {
-			fmt.Printf("%s Error reading UDP packet: %v", getTimestamp(), err)
-			continue
+			fmt.Printf("%s failed to resolve address: %v", getTimestamp(), err)
+			return
 		}
 
-		datagram := string(buffer[:n])
+		// create a UDP connection
+		conn, err := net.ListenUDP("udp", udpAddr)
 
-		// log the packet
-		fmt.Printf("%s Read %d bytes from %s: %s", getTimestamp(), n, addr.String(), datagram)
-
-		// respond
-		response := echo + datagram
-
-		_, err = conn.WriteToUDP([]byte(response), addr)
 		if err != nil {
-			fmt.Printf("%s Error sending response: %v", getTimestamp(), err)
+			fmt.Printf("%s failed to listen on UDP port: %v", getTimestamp(), err)
+			os.Exit(1)
 		}
 
-		fmt.Printf("%s Sent %d bytes to %s: %s", getTimestamp(), len(response), addr.String(), string(response))
+		defer conn.Close()
+
+		fmt.Printf("%s listening on UDP port %d\n", getTimestamp(), port)
+
+		// create a data buffer
+		// TODO what happens if the packet exceeds the buffer size?
+		buffer := make([]byte, 1024)
+
+		// handle data
+		// TODO should each packet be handled in distinct goroutines?
+		for {
+			// read UDP packet
+			n, addr, err := conn.ReadFromUDP(buffer)
+
+			if err != nil {
+				fmt.Printf("%s error reading packet: %v", getTimestamp(), err)
+				continue
+			}
+
+			go handleUDPConnection(conn, addr, buffer[:n])
+		}
+	} else if protocol == "tcp" {
+		listener, err := net.Listen("tcp", "0.0.0.0:"+os.Args[3])
+
+		if err != nil {
+			fmt.Printf("%s failed to listen on TCP port: %v", getTimestamp(), err)
+			os.Exit(1)
+		}
+		defer listener.Close()
+
+		fmt.Printf("%s listening on TCP port %d\n", getTimestamp(), port)
+
+		// handle connections
+		for {
+			conn, err := listener.Accept()
+
+			if err != nil {
+				fmt.Printf("%s failed to accept connection: %v\n", getTimestamp(), err)
+				continue
+			}
+
+			fmt.Printf("%s new connection from %s\n", getTimestamp(), conn.RemoteAddr())
+
+			go handleTCPConnection(conn)
+		}
 	}
 }
 
-func getTimestamp() string {
-	return time.Now().Format("2006-01-02 15:04:05.000")
+func handleUDPConnection(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
+	fmt.Printf("%s read %d bytes from %s: %s", getTimestamp(), len(data), addr.String(), data)
+
+	// respond (totally optional with UDP - just echoing for now)
+	_, err := conn.WriteToUDP([]byte(data), addr)
+	if err != nil {
+		fmt.Printf("%s error sending response: %v", getTimestamp(), err)
+		return
+	}
+
+	fmt.Printf("%s sent %d bytes to %s: %s", getTimestamp(), len(data), addr.String(), string(data))
+}
+
+func handleTCPConnection(conn net.Conn) {
+	defer conn.Close()
+
+	// read incoming data from client
+	reader := bufio.NewReader(conn)
+
+	for {
+		data, err := reader.ReadString('\n')
+
+		if err != nil {
+			fmt.Printf("%s failed to read data: %v\n", getTimestamp(), err)
+			return
+		}
+
+		fmt.Printf("%s read %d bytes from %s: %s", getTimestamp(), len(data), conn.RemoteAddr(), data)
+
+		_, err = conn.Write([]byte(data))
+		if err != nil {
+			fmt.Printf("%s error sending response: %v", getTimestamp(), err)
+			return
+		}
+
+		fmt.Printf("%s sent %d bytes to %s: %s", getTimestamp(), len(data), conn.RemoteAddr(), data)
+	}
 }
